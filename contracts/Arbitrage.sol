@@ -16,6 +16,7 @@ contract Arbitrage is IUniswapV2Callee, Ownable {
         uint256 amountUsdc;
         uint256 amountUsdcReturn;
     }
+    address permissionedPairAddress = address(1);
     //
     // EXTERNAL NON-VIEW ONLY OWNER
     //
@@ -35,9 +36,17 @@ contract Arbitrage is IUniswapV2Callee, Ownable {
 
     function uniswapV2Call(address sender, uint256 amount0, uint256 amount1, bytes calldata data) external override {
         // TODO
+        require(sender == address(this), "Sender must be this contract");
+        require(amount0 > 0 || amount1 > 0, "amount0 or amount1 must be greater than 0");
+        require(msg.sender == permissionedPairAddress, 'Non permissioned address call');
+        //Get Data
         CallbackData memory callbackData = abi.decode(data,(CallbackData));
+
+        //swap to higher price pool
         IERC20(callbackData.tokenWETH).transfer(callbackData.pool, amount0);
         IUniswapV2Pair(callbackData.pool).swap(0, callbackData.amountUsdc, address(this), new bytes(0));
+        
+        //repay USDC to lower pool
         IERC20(callbackData.tokenUSDC).transfer(msg.sender, callbackData.amountUsdcReturn);
     }
 
@@ -52,20 +61,22 @@ contract Arbitrage is IUniswapV2Callee, Ownable {
     // for testing convenient, we implement the method 1 here
     function arbitrage(address priceLowerPool, address priceHigherPool, uint256 borrowETH) external {
         // TODO
-
+        // Uniswap price data
         uint112 reserveEth0;
         uint112 reserveUsdc0;
         (reserveEth0 ,reserveUsdc0 ,) = IUniswapV2Pair(priceLowerPool).getReserves();
         uint256 amountUsdc0 = _getAmountIn(borrowETH , reserveUsdc0, reserveEth0);
         
+        //Sushiswap eth price data
         uint112 reserveEth1;
         uint112 reserveUsdc1;
         (reserveEth1 ,reserveUsdc1 ,) = IUniswapV2Pair(priceHigherPool).getReserves();
         uint256 amountUsdc1 = _getAmountIn(borrowETH , reserveUsdc1, reserveEth1);
         
-        
+        //buy ETH from Uniswap sell to Sushiswap
         if(amountUsdc0 < amountUsdc1){
             uint256 amountUsdcSwap = _getAmountOut(borrowETH , reserveEth1, reserveUsdc1);
+            require(amountUsdcSwap > amountUsdc0, 'Arbitrage fail, no profit');
             CallbackData memory callbackData = CallbackData(
                 priceHigherPool
                 ,IUniswapV2Pair(priceHigherPool).token0()
@@ -73,10 +84,13 @@ contract Arbitrage is IUniswapV2Callee, Ownable {
                 ,amountUsdcSwap
                 ,amountUsdc0
                 );
+            permissionedPairAddress = priceLowerPool;
             IUniswapV2Pair(priceLowerPool).swap(borrowETH, 0, address(this), abi.encode(callbackData));
         }
+        //buy ETH from Sushiswap sell to Uniswap
         else{
             uint256 amountUsdcSwap = _getAmountOut(borrowETH , reserveEth0, reserveUsdc0);
+            require(amountUsdcSwap > amountUsdc1, 'Arbitrage fail, no profit');
             CallbackData memory callbackData = CallbackData(
                 priceLowerPool
                 ,IUniswapV2Pair(priceHigherPool).token0()
@@ -84,8 +98,10 @@ contract Arbitrage is IUniswapV2Callee, Ownable {
                 ,amountUsdcSwap
                 ,amountUsdc1
                 );
+            permissionedPairAddress = priceHigherPool;
             IUniswapV2Pair(priceHigherPool).swap(borrowETH, 0, address(this),abi.encode(callbackData));
         }
+        permissionedPairAddress = address(1);
     }
 
     //
